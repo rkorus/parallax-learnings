@@ -84,7 +84,7 @@ The phone and your container are almost never on the same LAN. **Tailscale** giv
 private IP (100.x.x.x) that works from anywhere.
 
 1. Make a Tailscale account; install the Tailscale app on the phone and sign in. Note the phone's
-   tailnet IP (e.g. `100.77.139.59`).
+   tailnet IP (e.g. `100.64.0.5`).
 2. On the container, run `tailscaled`. **⚠️ Most containers can't create a TUN device**, so run
    Tailscale in **userspace mode** with a SOCKS5 proxy:
    ```bash
