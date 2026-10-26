@@ -6,11 +6,14 @@ stream, segments it into utterances with a simple energy VAD, transcribes each w
 faster-whisper, and listens for the wake word "parallax". On a wake:
   - if the same utterance carried a command ("hey parallax, what's on my calendar") it uses it;
   - if it was just the wake word, it says "Russell, I'm here. Go ahead." and takes the NEXT utterance.
-It then grabs a camera frame (eyes) and INJECTS the command into my live session the same way
-the Telegram bridge does, so *I* answer it and speak the reply through the phone.
+It INJECTS the command into my live session the same way the Telegram bridge does, so *I* answer it
+and speak the reply through the phone. Conversation mode keeps listening for follow-ups after each
+exchange (no re-wake needed); an instant pre-cached ack plays the moment a command lands (masks the
+think-time); barge-in stops a current answer when a new command/wake comes in.
 
-Self-mute: anything spoken via speak.py writes /tmp/px_mute_until; utterances that end inside
-that window are ignored, so the loop never transcribes its own voice.
+Self-mute: speak.py writes /tmp/px_mute_until (short) + /tmp/px_last_spoken (what I said); the loop
+ignores utterances inside that window OR that echo my own words (is_self_echo), so it never
+transcribes its own voice but never blocks the user's reply either.
 
 Modes:
   python3 parallax_ear.py                 # live: stream from IP Webcam
@@ -85,6 +88,41 @@ def stop_playback():
         except Exception: pass
     except Exception as e:
         log(f"stop_playback error: {e}")
+
+ACK_PHONE = "/sdcard/Download/px_ack.mp3"
+ACK_TEXT = "One moment."
+_ack_ready = [False]
+
+def setup_ack():
+    """Generate + push the instant-ack audio ONCE, so wake-time playback skips gen/transcode/push.
+    Called when the stream first opens (phone reachable). Idempotent."""
+    if _ack_ready[0]:
+        return
+    try:
+        sys.path.insert(0, HERE)
+        import speak as S
+        wav = S.gen_wav(ACK_TEXT, "/tmp/px_ack.wav")
+        S.transcode(wav, "/tmp/px_ack.mp3", "mp3", None, "stereo", 44100)
+        r = subprocess.run(ADB + ["push", "/tmp/px_ack.mp3", ACK_PHONE], capture_output=True, timeout=15)
+        _ack_ready[0] = (r.returncode == 0)
+        log(f"instant-ack {'ready' if _ack_ready[0] else 'push failed'}")
+    except Exception as e:
+        log(f"setup_ack error: {e}")
+
+def play_ack():
+    """Play the pre-pushed instant-ack (fast - no gen/transcode/push) to confirm I heard, masking
+    the round-trip while I think. Short self-mute so I don't transcribe it."""
+    if not _ack_ready[0]:
+        return
+    try:
+        with open(MUTE_FILE, "w") as f: f.write(str(time.time() + 3.0))
+        with open("/tmp/px_last_spoken", "w") as f: f.write(ACK_TEXT.lower())
+        subprocess.run(ADB + ["shell", "am", "start", "-a", "android.intent.action.VIEW",
+                              "-d", f"file://{ACK_PHONE}", "-t", "audio/mpeg",
+                              "-n", "org.videolan.vlc/org.videolan.vlc.StartActivity"],
+                       capture_output=True, timeout=8)
+    except Exception as e:
+        log(f"play_ack error: {e}")
 
 def _words(text):
     return re.findall(r"[a-z']+", text.lower())
@@ -247,6 +285,7 @@ def handle_utterance(pcm, rate):
 
 def act_on_command(cmd):
     stop_playback()   # BARGE-IN: cut off any answer I'm mid-way through playing
+    play_ack()        # INSTANT feedback ("One moment.") while I think - masks round-trip latency
     now = time.time()
     _last_action[0] = now
     _conversation_until[0] = now + CONV_WINDOW   # keep listening for the next thing he says
@@ -289,6 +328,7 @@ def live():
                 log("no stream (server down?); retrying in 5s"); p.kill(); time.sleep(5); continue
             rate, chans, bits = parse_wav_header(hdr)
             log(f"stream open: {rate}Hz {chans}ch {bits}bit")
+            setup_ack()   # push the instant-ack file now that the phone is reachable
             seg = Segmenter(rate)
             fb = seg.fbytes * max(1, chans)
             while True:

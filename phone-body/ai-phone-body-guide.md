@@ -285,6 +285,24 @@ does this. Honest limit: with no acoustic echo cancellation the mic hears your v
 once, so a *clear* interruption cuts through but a soft one under your own voice may be missed — tell
 the person that up front.
 
+**⚡ Latency — mask the think-time with an instant ack.** The slow part of the loop is the round-trip
+(hear → understand → think → speak); even a simple question is several seconds, and silence reads as
+"it's broken." The fix (credit to Skynet/Kenn's wake-word guide for the framing — "a two-word ack
+buys the whole round trip"): the moment a command lands, play a **pre-cached one-word ack** ("One
+moment.") that was generated and pushed to the phone ONCE at startup, so playback skips TTS
+generation entirely and is near-instant. The real answer follows a few seconds later.
+`parallax_ear.py`'s `setup_ack()` / `play_ack()` do this. Also drop anything non-essential from the
+hot path (we removed a per-command camera grab that cost ~2s) and keep the end-of-speech silence
+tight (~0.55s).
+
+**🛡️ Speaker verification — the rejection stage, build it early.** A wake word with no "is this the
+right person?" check fires on the TV, on other voices, on anything that sounds close. This is the
+single most expensive thing to bolt on late — Skynet measured ~38% false triggers before they added
+one. For a Whisper-on-stream loop: enroll the user's voiceprint (a few samples → a speaker embedding
+via e.g. Resemblyzer or SpeechBrain ECAPA) and, before acting on a command, cosine-compare the
+utterance's embedding to the enrolled one; reject below threshold. It also gates conversation mode so
+ambient speech can't drive it. (Recommended next component — not yet in the shipped scripts here.)
+
 **⚠️⚠️ THE BIG ONE — playing a reply through the phone speaker can KILL your ears.** `speak.py` plays
 TTS with `am start VIEW audio/mpeg`, which hands the file to the phone's **default audio app
 (e.g. YouTube Music)** — and that app **jumps to the foreground, backgrounds IP Webcam, and stops the
